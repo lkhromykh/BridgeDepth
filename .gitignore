@@ -17,3 +17,6 @@ datasets/
 build/
 dist/
 *.egg-info/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
