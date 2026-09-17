@@ -1,35 +1,42 @@
 import os, sys, argparse
 code_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(f'{code_dir}/../')
+sys.path.append(f"{code_dir}/../")
 import torch
 from bridgedepth.bridgedepth import BridgeDepth
 
 
-class BridgeDepthOnnx(BridgeDepth):
-    def forward(self, img1: torch.Tensor, img2: torch.Tensor) -> torch.Tensor:
-        assert img1.shape == img2.shape
-        assert img1.ndim == 3
-        assert img1.dtype == img2.dtype == torch.uint8
-        inputs = {'img1': self._preproc(img1), 'img2': self._preproc(img2)}
-        results = super().forward(inputs)
-        disp = results['disp_pred'].squeeze(0).to(torch.float32).clamp_min(1e-3)
-        assert disp.shape == img1.shape[:2]
-        return disp
+class BridgeDepthOnnx(torch.nn.Module):
+    def __init__(self, model: str) -> None:
+        super().__init__()
+        self._model = BridgeDepth.from_pretrained(model)
+
+    def forward(self, left_image: torch.Tensor, right_image: torch.Tensor, fx_baseline: torch.Tensor) -> torch.Tensor:
+        assert left_image.shape == right_image.shape
+        assert left_image.ndim == 3
+        assert left_image.dtype == right_image.dtype == torch.uint8
+        assert fx_baseline.numel() == 1
+        inputs = {"img1": self._preproc(left_image), "img2": self._preproc(right_image)}
+        disp = self._model(inputs)["disp_pred"].squeeze(0).float()
+        depth = fx_baseline.reshape(1, 1) / disp.clamp_min(1e-4)
+        depth = torch.clamp(depth, 0., 65535.)
+        assert depth.shape == left_image.shape[:2]
+        return depth
 
     @staticmethod
     def _preproc(x):
-        return x.permute(2, 0, 1).unsqueeze(0).contiguous().float()
+        return x.to(torch.float16).permute(2, 0, 1).unsqueeze(0)
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--save_dir', type=str, default=f'{code_dir}/../onnx/', help='Path to save results.')
-    parser.add_argument('--model_name', choices=['rvc', 'rvc_pretrain', 'eth3d_pretrain', 'middlebury_pretrain'], default='rvc_pretrain')
-    parser.add_argument('--checkpoint_path', default=None, type=str)
-    parser.add_argument('--height', type=int, default=540)
-    parser.add_argument('--width', type=int, default=960)
-    parser.add_argument('--device', type=str, default='cuda')
+    parser.add_argument("--save_dir", type=str, default=f"{code_dir}/../onnx/", help="Path to save results.")
+    parser.add_argument("--model_name", choices=["rvc", "rvc_pretrain", "eth3d_pretrain", "middlebury_pretrain"], default="rvc_pretrain")
+    parser.add_argument("--checkpoint_path", default=None, type=str)
+    parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--width", type=int, default=960)
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--opset", type=int, default=17)
     args = parser.parse_args()
     os.makedirs(os.path.dirname(args.save_dir), exist_ok=True)
 
@@ -42,23 +49,24 @@ if __name__ == '__main__':
         model_name = f"bridge_{args.model_name}"
 
     device = torch.device(args.device)
-    model = BridgeDepthOnnx.from_pretrained(pretrained_model_name_or_path)
+    model = BridgeDepthOnnx(pretrained_model_name_or_path)
     model = model.to(device).eval()
     shape = (args.height, args.width, 3)
-    img1 = torch.zeros(shape, dtype=torch.uint8, device=device)
-    img2 = torch.zeros(shape, dtype=torch.uint8, device=device)
+    img1 = torch.randint(0, 256, shape, dtype=torch.uint8, device=device)
+    img2 = torch.randint(0, 256, shape, dtype=torch.uint8, device=device)
+    fx_baseline = torch.tensor([10.], dtype=torch.float32, device=device)
 
-    opset_version = 17
-    output_file = os.path.join(args.save_dir, f"{model_name}_opset{opset_version}.onnx")
+    opset_version = args.opset
+    output_file = os.path.join(args.save_dir, f"{model_name}_{args.height}x{args.width}_opset{opset_version}.onnx")
 
     print(f"try to export the ONNX (opset {opset_version})...")
-    with torch.no_grad(), torch.amp.autocast(device.type):
+    with torch.no_grad(), torch.amp.autocast(device.type, enabled=args.amp):
         torch.onnx.export(
             model,
-            args=(img1, img2),
+            args=(img1, img2, fx_baseline),
             f=output_file,
-            input_names=["left", "right"],
-            output_names=["disp"],
+            input_names=["left", "right", "fx_baseline"],
+            output_names=["depth"],
             opset_version=opset_version,
             do_constant_folding=True,
             dynamo=False,

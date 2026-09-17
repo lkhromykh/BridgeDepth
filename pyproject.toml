@@ -15,22 +15,23 @@ dependencies = [
     "tensorboard>=2.19.0",
     "termcolor>=3.1.0",
     "yacs>=0.1.8",
-    "open3d",
-    "onnxruntime-gpu>=1.26.0,<1.27.0",
+    "open3d==0.19",
+    "onnxruntime-gpu>=1.30.0,<2",
+    "tensorrt<11",
 ]
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
-platforms = [{ platform = "linux-64", glibc = "2.39", cuda = "12.6" }]
+platforms = [{ platform = "linux-64", cuda = { driver = "13.0", arch = "8.9" }, archspec = "zen4", glibc = "2.39", linux = "7.0.0" }]
 
-[activation.env]
-LD_LIBRARY_PATH = "$CONDA_PREFIX/lib"
+[tool.pixi.activation.env]
+LD_LIBRARY_PATH = "$CONDA_PREFIX/lib/python3.12/site-packages/tensorrt_libs:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH}"
 
 [tool.pixi.dependencies]
 python = "3.12.*"
-cuda-version = "==12.6"
-cuda-runtime = ">=12.6.3,<13"
-cudnn = ">=9.10.2.21,<10"
+cuda-version = "==13.0"
+cuda-runtime = ">=13.0.3,<14"
+cudnn = ">=9.26.0.51,<10"
 
 [tool.pixi.pypi-dependencies]
 torch = { version = "==2.7.0", index = "https://download.pytorch.org/whl/cu126" }
